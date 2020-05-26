@@ -1,5 +1,14 @@
 import UIKit
 
+var isLoggingEnabled = true
+func debugLog(_ value: String = "") {
+    guard isLoggingEnabled else {
+        return
+    }
+
+    print(value)
+}
+
 enum DieFace: Int {
     case one = 1
     case two = 2
@@ -114,6 +123,8 @@ final class Player: Hashable {
 
     private(set) var score: Int
 
+    var requiredToGetOnTheBoard = 0
+
     /// Initializes a Player object with given thresholds and properties
     ///
     /// - parameter pointThreshold: The running-total at which a player will stop their turn to collect points for a given turn
@@ -143,58 +154,65 @@ final class Player: Hashable {
 
         // prevents accidental "dice threshold of 7+ when only 6 dice are in a standard Hand" infinite loops (if that's even possible? lol)
         if hand.dice.count < diceThreshold {
-            print("below dice threshold, \(hand.dice.count) versus dt of \(diceThreshold)")
+            debugLog("below dice threshold, \(hand.dice.count) versus dt of \(diceThreshold)")
             return
         }
 
         var doneRolling = false
 
+        // eg: pointThreshold is 300, required to get on board 500, current score 0 ... this value becomes 500
+        // eg: pointThreshold is 600, required to get on board 500, current score 0... this value becomes 600
+        // eg: pointThreshold is 300, required to get on board 500, current score is 600 ... this value becomes 300
+        // eg: pointThreshold is temp 2800, up from 300 (eg: end of game), required to get on board 500, current score is 9300... this value becomes 2800
+        // eg: pointThreshold is 300, required to get on board now-later-on becomes 5000 (aka: "moving gate" rule), current score is 4000... this value becomes 1000
+        let requiredScoreThisTurnBeforeAllowedToEnd = max(self.pointThreshold, (self.requiredToGetOnTheBoard - self.score))
+
         while !doneRolling {
             hand.roll()
 
-            print("\n-- 🎲 ROLL \(hand.dice.count) -------")
-            print(hand.diceDescription() + "\n")
+            debugLog("\n-- 🎲 ROLL \(hand.dice.count) -------")
+            debugLog(hand.diceDescription() + "\n")
 
             let optimalDiceRoll = Score.calculateOptimal(forHand: hand)
             let maximizeDiceRoll = Score.calculateTotal(forHand: hand)
 
             if optimalDiceRoll.isFarkle {
-                print("❌ farkle")
+                debugLog("❌ farkle")
                 scoreThisTurn = 0
                 doneRolling = true
             } else if maximizeDiceRoll.diceRemaining == 0 {
                 // if all dice can get used, then use all the dice boi. 6 > 5 > 4 > 3 > 2 > 1...
                 // so if you roll 2x 1s, don't leave 1 and farkle out, take both.
                 // greedy or not, this is just "smart" strategy
-                print("😎 can take all dice and re-roll a full hand. YAY!:")
-                print("\(scoreThisTurn) + \(maximizeDiceRoll.points)")
+                debugLog("😎 can take all dice and re-roll a full hand. YAY!:")
+                debugLog("\(scoreThisTurn) + \(maximizeDiceRoll.points)")
 
                 scoreThisTurn += maximizeDiceRoll.points
                 hand.reset()
-            } else if !greedy && (scoreThisTurn + maximizeDiceRoll.points >= self.pointThreshold) && maximizeDiceRoll.diceRemaining < diceThreshold {
+            } else if !self.greedy && (scoreThisTurn + maximizeDiceRoll.points >= requiredScoreThisTurnBeforeAllowedToEnd) && maximizeDiceRoll.diceRemaining < self.diceThreshold {
                 // eg: if pt == 1000.. you're at 900... you roll 2 5s and 2 3s (aka not a zero-dice outcome), taking both 5s would breach the threshold.
                 // A non-greedy player would say "oh goodie! By taking ALL of the dice, I breach my threshold and lock in my score."
                 // But a greedy player would say "nope! Taking the least-dice-used route."
-                print("✅ A non-greedy player breaches their point AND dice threshold. ENDING TURN:")
-                print("\(scoreThisTurn) + \(maximizeDiceRoll.points)")
+                debugLog("✅ A non-greedy player breaches their point AND dice threshold. ENDING TURN:")
+                debugLog("\(scoreThisTurn) + \(maximizeDiceRoll.points)")
                 scoreThisTurn += maximizeDiceRoll.points
                 doneRolling = true
-            } else if (scoreThisTurn + optimalDiceRoll.value) >= self.pointThreshold {
+            } else if (scoreThisTurn + optimalDiceRoll.value) >= requiredScoreThisTurnBeforeAllowedToEnd {
                 // eg: if pt == 1000.. you're at 900... you roll 2 1s and 2 3s (aka not a zero-dice outcome), taking even just one 1 would breach the threshold.
                 // Both greedy and non-greedy need to then decide "okay. now that my point threshold has been broken by the most optimal dice roll, should i roll again or call it quits here?"
 
-                print("⚠️ point breached on optimal roll")
+                debugLog("⚠️ point breached on optimal roll")
 
                 // it is, however, likely that the non-greedy players will ALWAYS roll another as the check to see if they can "bounce early" has already been decided that it is not the case.
                 // for greedy players, they'll ALWAYS want to roll again... unless of course the dice threshold is also breached. In which case their turn ends.
-                if hand.dice.count - optimalDiceRoll.amountOfDice < diceThreshold {
-                    print("✅ optimal dice breached. ENDING TURN:")
-                    print("\(scoreThisTurn) + \(maximizeDiceRoll.points)")
+                if hand.dice.count - optimalDiceRoll.amountOfDice < self.diceThreshold {
+                    debugLog("✅ optimal dice breached. ENDING TURN:")
+                    debugLog("\(scoreThisTurn) + \(maximizeDiceRoll.points)")
                     scoreThisTurn += maximizeDiceRoll.points
                     doneRolling = true
                 } else {
-                    print("🤞🏻 Taking optimal & rolling another:")
-                    print("\(scoreThisTurn) + \(optimalDiceRoll.value)")
+                    debugLog("🤞🏻 Taking optimal & rolling another:")
+                    debugLog("\(scoreThisTurn) + \(optimalDiceRoll.value)")
                     scoreThisTurn += optimalDiceRoll.value // can roll another round since dice threshold not reached
                     hand.removeDice(for: optimalDiceRoll)
                 }
@@ -202,26 +220,22 @@ final class Player: Hashable {
                 // In this final case, the dice remaining is > 0
                 // AND the point threshold was not breached from any method.
                 // Which means the only thing left would be to take the optimal-dice route and re-roll.
-                print("🤞🏻 neither breached. Rolling again:")
-                print("\(scoreThisTurn) + \(optimalDiceRoll.value)")
+                debugLog("🤞🏻 neither breached. Rolling again:")
+                debugLog("\(scoreThisTurn) + \(optimalDiceRoll.value)")
                 scoreThisTurn += optimalDiceRoll.value // can roll another around since point threshold not reached
                 hand.removeDice(for: optimalDiceRoll)
             }
         }
 
-        print("\n💰 total score this turn: \(scoreThisTurn)")
+        debugLog("\n💰 total score this turn: \(scoreThisTurn)")
         self.score += scoreThisTurn
     }
 
     func takeFinalTurn(competingWithTopScore topScore: Int) {
-        guard playsFinalTurnDifferently else {
-            takeTurn()
-            return
-        }
-
+        let delta = (topScore - self.score) + 50 // because you need to score HIGHER in order to be considered a winner.
         let previousPointThreshold = self.pointThreshold
-        self.pointThreshold = topScore
-        takeTurn()
+        self.pointThreshold = self.playsFinalTurnDifferently ? delta : previousPointThreshold
+        self.takeTurn()
         self.pointThreshold = previousPointThreshold
     }
 
@@ -409,52 +423,83 @@ final class Game {
     private(set) var possibleWinner: Player?
 
     let minimumWinScore: Int
+    var requiredToGetOnTheBoard: Int {
+        didSet {
+            players.forEach {
+                $0.requiredToGetOnTheBoard = self.requiredToGetOnTheBoard
+            }
+        }
+    }
 
     private(set) var numberOfRoundsPlayed = 0
 
-    init?(with players: [Player], minimumWinScore: Int = 10000) {
-        guard players.count >= 1 else {
+    init?(with thresholds: [(point: Int, dice: Int, greedy: Bool, final: Bool)], minimumWinScore: Int = 10000, requiredToGetOnTheBoard: Int = 500) {
+        guard thresholds.count >= 1 else {
             return nil
         }
 
         self.minimumWinScore = minimumWinScore
-        self.players = players
+        self.requiredToGetOnTheBoard = requiredToGetOnTheBoard
+        self.players = thresholds.map(Player.init)
+        self.players.forEach { $0.requiredToGetOnTheBoard = self.requiredToGetOnTheBoard }
     }
 
-    func playRound() {
-        numberOfRoundsPlayed += 1
-        let roundString = "================ ROUND \(numberOfRoundsPlayed) ======================"
-        print("\n" + String(repeating: "=", count: roundString.count))
-        print(roundString)
-        print(String(repeating: "=", count: roundString.count))
+    func playGame() {
+        while self.possibleWinner == nil {
+            self.playRound()
+        }
 
-        for _ in 0 ..< players.count {
-            let player = players.remove(at: 0)
-            print("\n\n😊 Player \(player.description) taking turn #\(numberOfRoundsPlayed): \(player.score)\n")
+        // one final round for everyone else, now that the possible winner is no longer in the "list" of rollers
+        self.finalRound()
+
+        //isLoggingEnabled = true
+
+        if let winner = self.possibleWinner {
+            debugLog("\n\n🎉\n\nAND WE HAVE A WINNER!!!")
+            debugLog("after \(self.numberOfRoundsPlayed) rounds:")
+            debugLog(winner.fullDescription)
+            debugLog(self.rankDescription())
+        }
+    }
+
+    func rankDescription() -> String {
+        "\nRANKING:\n" + players.sorted { $0.score > $1.score }.map { "\($0.description): \($0.score)" }.joined(separator: "\n")
+    }
+
+    private func playRound() {
+        self.numberOfRoundsPlayed += 1
+        let roundString = "================ ROUND \(self.numberOfRoundsPlayed) ======================"
+        debugLog("\n" + String(repeating: "=", count: roundString.count))
+        debugLog(roundString)
+        debugLog(String(repeating: "=", count: roundString.count))
+
+        for _ in 0 ..< self.players.count {
+            let player = self.players.remove(at: 0)
+            debugLog("\n\n😊 Player \(player.description) taking turn #\(self.numberOfRoundsPlayed): \(player.score)\n")
             player.takeTurn()
-            players.append(player)
+            self.players.append(player)
 
-            if player.score >= minimumWinScore {
-                possibleWinner = player
-                print("\nPLAYER \(player.description) ENDED WITH SCORE \(player.score)")
+            if player.score >= self.minimumWinScore {
+                self.possibleWinner = player
+                debugLog("\nPLAYER \(player.description) ENDED WITH SCORE \(player.score)")
                 return // commence final round
             }
         }
     }
 
-    func finalRound() {
+    private func finalRound() {
         guard players.count > 1 else {
             return
         }
 
-        print("\n===============================================")
-        print("================ FINAL ROUND ==================")
-        print("===============================================")
+        debugLog("\n===============================================")
+        debugLog("================ FINAL ROUND ==================")
+        debugLog("===============================================")
 
         // ignoring the final player since they started the final round
         for x in 0 ..< players.count - 1 {
             let player = players[x]
-            print("\n\nPlayer \(player.description) taking final turn: \(player.score)\n")
+            debugLog("\n\nPlayer \(player.description) taking final turn: \(player.score)\n")
             player.takeFinalTurn(competingWithTopScore: possibleWinner?.score ?? minimumWinScore)
 
             if let currentWinner = possibleWinner, player.score > currentWinner.score {
@@ -465,31 +510,38 @@ final class Game {
                 possibleWinner = player
             }
 
-            print("\nPLAYER \(player.description) ENDED WITH SCORE \(player.score)")
+            debugLog("\nPLAYER \(player.description) ENDED WITH SCORE \(player.score)")
         }
     }
+}
 
-    func rankDescription() -> String {
-        "\nRANKING:\n" + players.sorted { $0.score > $1.score }.map { "\($0.description): \($0.score)" }.joined(separator: "\n")
+//isLoggingEnabled = false
+
+let thresholds = [
+    (point: 300, dice: 3, greedy: false, final: true),
+    (point: 300, dice: 3, greedy: true, final: true),
+]
+
+
+///
+/// INDIVIDUAL GAMES
+///
+
+thresholds.forEach {
+    if let session = Game(with: [$0]) {
+        session.playGame()
     }
 }
 
-let players = [Player(point: 300, dice: 3, greedy: true), Player(point: 300, dice: 3, greedy: false)]
-let session = Game(with: players)!
 
-while session.possibleWinner == nil {
-    session.playRound()
-}
+///
+/// MEGA GAME
+///
 
-// one final round for everyone else, now that the possible winner is no longer in the "list" of rollers
-session.finalRound()
+//if let session = Game(with: thresholds) {
+//    session.playGame()
+//}
 
-if let winner = session.possibleWinner {
-    print("\n\n🎉\n\nAND WE HAVE A WINNER!!!")
-    print("after \(session.numberOfRoundsPlayed) rounds:")
-    print(winner.fullDescription)
-    print(session.rankDescription())
-}
 
 
 
@@ -507,10 +559,10 @@ if let winner = session.possibleWinner {
 // var total = 0
 // for _ in 0..<10000 {
 //     hand.roll()
-//     print(hand.diceDescription())
+//     debugLog(hand.diceDescription())
 //     total += Score.calculateOptimal(forHand: hand).value
 // }
-// print(Double(total)/Double(runs))
+// debugLog(Double(total)/Double(runs))
 
 
 /// Using `calculateTotal(forHand:)`
@@ -527,7 +579,9 @@ if let winner = session.possibleWinner {
 // var total = 0
 // for _ in 0..<10000 {
 //     hand.roll()
-//     print(hand.diceDescription())
+//     debugLog(hand.diceDescription())
 //     total += Score.calculateTotal(forHand: hand).points
 // }
-// print(Double(total)/Double(runs))
+// debugLog(Double(total)/Double(runs))
+
+

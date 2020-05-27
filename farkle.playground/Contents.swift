@@ -564,7 +564,38 @@ final class PlayerAnalyzer {
     func results() -> String {
         let allTurns = self.games.map { "\($0.numberOfRoundsPlayed)" }.joined(separator: ", ")
         let formattedTurns = String(format: "%.2f", self.averageNumberOfTurnsToVictory.round(to: 2))
-        return allTurns + "\n" + formattedTurns
+        return "All turns:\n" + allTurns + "\nAverage # until 10k:\n" + formattedTurns
+    }
+}
+
+final class MultiGameAnalyzer {
+    private var players: [Player]
+    private var winCounter = [Player: Int]()
+    private var games = [Game]()
+
+    init(players: [Player]) {
+        self.players = players
+        self.players.forEach {
+            self.winCounter[$0] = 0
+        }
+    }
+
+    func analyze(game: Game) {
+        self.games.append(game)
+        if let winner = game.possibleWinner {
+            self.winCounter[winner]? += 1
+        }
+    }
+
+    func results() -> String {
+        let headers = "Player ID, Point Threshold, Dice Threshold, Greedy, Plays Final Different, Win Count, Win Rate"
+        let resultsTable = self.winCounter.map { player, winCount in
+            let winRate = Double(winCount) / Double(self.games.count)
+            let formattedWinRate = String(format: "%.2f", winRate.round(to: 2))
+            return "\(player.description), \(player.pointThreshold), \(player.diceThreshold), \(player.greedy), \(player.playsFinalTurnDifferently), \(winCount), \(formattedWinRate)"
+        }.joined(separator: "\n")
+
+        return headers + "\n" + resultsTable
     }
 }
 
@@ -575,48 +606,77 @@ extension Double {
     }
 }
 
+enum Simulation {
+    static func runSingleGames(forPlayers players: [Player], totalSimulatedRuns: Int, debugLoggingEnabled shouldLogThis: Bool = false) {
+        let tempLogging = isLoggingEnabled
+        isLoggingEnabled = shouldLogThis
+
+        players.forEach {
+            print("\($0.description): \($0.pointThreshold), \($0.diceThreshold), \($0.greedy), \($0.playsFinalTurnDifferently)")
+            let analyzer = PlayerAnalyzer(player: $0)
+
+            /// for each "player" i want to run `totalSimulations` # of games
+            for _ in 1...totalSimulatedRuns {
+                if let session = Game(with: [$0]) {
+                    session.playGame()
+
+                    analyzer.analyzeSinglePlayer(game: session)
+                }
+            }
+
+            print(analyzer.results() + "\n")
+        }
+
+        isLoggingEnabled = tempLogging
+    }
+
+    static func runMegaGames(forPlayers players: [Player], totalSimulatedRuns: Int, debugLoggingEnabled shouldLogThis: Bool = false) {
+        let tempLogging = isLoggingEnabled
+        isLoggingEnabled = shouldLogThis
+
+        print("\nrunning mega game")
+        let analyzer = MultiGameAnalyzer(players: players)
+
+        /// for each "player" i want to run `totalSimulations` # of games
+        for _ in 1...totalSimulatedRuns {
+            if let session = Game(with: players) {
+                session.playGame()
+
+                analyzer.analyze(game: session)
+            }
+        }
+
+        print(analyzer.results())
+
+        isLoggingEnabled = tempLogging
+    }
+}
+
 let thresholds = [
+    (point: 300, dice: 2, greedy: false, final: true),
     (point: 300, dice: 3, greedy: false, final: true),
+    (point: 300, dice: 4, greedy: false, final: true),
+    (point: 300, dice: 5, greedy: false, final: true),
+    (point: 300, dice: 6, greedy: false, final: true),
+
+    (point: 300, dice: 2, greedy: true, final: true),
     (point: 300, dice: 3, greedy: true, final: true),
+    (point: 300, dice: 4, greedy: true, final: true),
+    (point: 300, dice: 5, greedy: true, final: true),
+    (point: 300, dice: 6, greedy: true, final: true),
 ]
 
 let players = thresholds.map(Player.init)
 
-///
-/// INDIVIDUAL GAMES
-///
-
-let totalSimulations = 20
-
-isLoggingEnabled = false
-
-players.forEach {
-    print("running for: \($0.fullDescription)")
-    let analyzer = PlayerAnalyzer(player: $0)
-
-    /// for each "player" i want to run `totalSimulations` # of games
-    for _ in 1...totalSimulations {
-        if let session = Game(with: [$0]) {
-            session.playGame()
-
-            analyzer.analyzeSinglePlayer(game: session)
-        }
-    }
-
-    print(analyzer.results())
-}
-
-
-///
-/// MEGA GAME
-///
-
-//if let session = Game(with: thresholds) {
-//    session.playGame()
-//}
+Simulation.runSingleGames(forPlayers: players, totalSimulatedRuns: 10)
+//Simulation.runMegaGames(forPlayers: players, totalSimulatedRuns: 100)
 
 
 
+
+
+
+// EXTRA STUFF:
 
 /// Using `calculateOptimal(forHand:)`
 /// Average for 6 dice rolling, over 10k rolls: 299 - 330

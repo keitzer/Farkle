@@ -121,7 +121,11 @@ final class Player: Hashable {
     /// If true, acts as if the point threshold is the winner's score minus their current score
     let playsFinalTurnDifferently: Bool
 
-    private(set) var score: Int
+    weak var scoreboard: ScoreManager?
+
+    var score: Int {
+        scoreboard?.score(for: self) ?? -1
+    }
 
     var requiredToGetOnTheBoard = 0
 
@@ -136,7 +140,6 @@ final class Player: Hashable {
         self.diceThreshold = diceThreshold > 0 ? diceThreshold : 1 // 0 makes no sense.
         self.greedy = greedy
         self.playsFinalTurnDifferently = playsFinalTurnDifferently
-        self.score = 0
     }
 
     var description: String {
@@ -144,7 +147,7 @@ final class Player: Hashable {
     }
 
     var fullDescription: String {
-        description + " has a score of \(score) using a pointThreshold of \(pointThreshold) and a diceThreshold of \(diceThreshold) while being \(greedy ? "" : "NOT ")greedy and \(playsFinalTurnDifferently ? "" : "NOT ")playing final turns until victory or farkle"
+        description + " has a score of \(self.score) using a pointThreshold of \(self.pointThreshold) and a diceThreshold of \(self.diceThreshold) while being \(self.greedy ? "" : "NOT ")greedy and \(self.playsFinalTurnDifferently ? "" : "NOT ")playing final turns until victory or farkle"
     }
 
     /// Rolls the dice until thresholds are breached.
@@ -160,11 +163,14 @@ final class Player: Hashable {
 
         var doneRolling = false
 
-        // eg: pointThreshold is 300, required to get on board 500, current score 0 ... this value becomes 500
-        // eg: pointThreshold is 600, required to get on board 500, current score 0... this value becomes 600
-        // eg: pointThreshold is 300, required to get on board 500, current score is 600 ... this value becomes 300
-        // eg: pointThreshold is temp 2800, up from 300 (eg: end of game), required to get on board 500, current score is 9300... this value becomes 2800
-        // eg: pointThreshold is 300, required to get on board now-later-on becomes 5000 (aka: "moving gate" rule), current score is 4000... this value becomes 1000
+        /// eg: pointThreshold is 300, required to get on board 500, current score 0 ... this value becomes 500
+        ///
+        /// eg: pointThreshold is 600, required to get on board 500, current score 0... this value becomes 600
+        ///
+        /// eg: pointThreshold is 300, required to get on board 500, current score is 600 ... this value becomes 300
+        ///
+        /// eg: pointThreshold is temp 2800, up from 300 (eg: end of game), required to get on board 500, current score is 9300... this value becomes 2800
+        /// eg: pointThreshold is 300, required to get on board now-later-on becomes 5000 (aka: "moving gate" rule), current score is 4000... this value becomes 1000
         let requiredScoreThisTurnBeforeAllowedToEnd = max(self.pointThreshold, (self.requiredToGetOnTheBoard - self.score))
 
         while !doneRolling {
@@ -228,7 +234,7 @@ final class Player: Hashable {
         }
 
         debugLog("\n💰 total score this turn: \(scoreThisTurn)")
-        self.score += scoreThisTurn
+        scoreboard?.lock(in: scoreThisTurn, for: self)
     }
 
     func takeFinalTurn(competingWithTopScore topScore: Int) {
@@ -417,8 +423,15 @@ enum Score {
     }
 }
 
-final class Game {
+protocol ScoreManager: AnyObject {
+    func score(for player: Player) -> Int?
+    func lock(in value: Int, for player: Player)
+}
+
+final class Game: ScoreManager {
+
     private(set) var players: [Player]
+    private(set) var scores = [Player: Int]()
 
     private(set) var possibleWinner: Player?
 
@@ -433,15 +446,30 @@ final class Game {
 
     private(set) var numberOfRoundsPlayed = 0
 
-    init?(with thresholds: [(point: Int, dice: Int, greedy: Bool, final: Bool)], minimumWinScore: Int = 10000, requiredToGetOnTheBoard: Int = 500) {
+    init?(with players: [Player], minimumWinScore: Int = 10000, requiredToGetOnTheBoard: Int = 500) {
         guard thresholds.count >= 1 else {
             return nil
         }
 
         self.minimumWinScore = minimumWinScore
         self.requiredToGetOnTheBoard = requiredToGetOnTheBoard
-        self.players = thresholds.map(Player.init)
-        self.players.forEach { $0.requiredToGetOnTheBoard = self.requiredToGetOnTheBoard }
+        self.players = players
+        self.players.forEach { player in
+            player.requiredToGetOnTheBoard = self.requiredToGetOnTheBoard
+            player.scoreboard = self
+        }
+
+        players.forEach {
+            self.scores[$0] = 0
+        }
+    }
+
+    func score(for player: Player) -> Int? {
+        scores[player]
+    }
+
+    func lock(in value: Int, for player: Player) {
+        scores[player]? += value
     }
 
     func playGame() {
@@ -515,22 +543,67 @@ final class Game {
     }
 }
 
-//isLoggingEnabled = false
+final class PlayerAnalyzer {
+    private var player: Player
+
+    private var games = [Game]()
+    private var totalTurns = 0
+    private var averageNumberOfTurnsToVictory: Double {
+        Double(self.totalTurns) / Double(self.games.count)
+    }
+
+    init(player: Player) {
+        self.player = player
+    }
+
+    func analyzeSinglePlayer(game: Game) {
+        self.games.append(game)
+        self.totalTurns += game.numberOfRoundsPlayed
+    }
+
+    func results() -> String {
+        let allTurns = self.games.map { "\($0.numberOfRoundsPlayed)" }.joined(separator: ", ")
+        let formattedTurns = String(format: "%.2f", self.averageNumberOfTurnsToVictory.round(to: 2))
+        return allTurns + "\n" + formattedTurns
+    }
+}
+
+extension Double {
+    func round(to places: Int) -> Double {
+        let divisor = pow(10.0, Double(places))
+        return (self * divisor).rounded() / divisor
+    }
+}
 
 let thresholds = [
     (point: 300, dice: 3, greedy: false, final: true),
     (point: 300, dice: 3, greedy: true, final: true),
 ]
 
+let players = thresholds.map(Player.init)
 
 ///
 /// INDIVIDUAL GAMES
 ///
 
-thresholds.forEach {
-    if let session = Game(with: [$0]) {
-        session.playGame()
+let totalSimulations = 20
+
+isLoggingEnabled = false
+
+players.forEach {
+    print("running for: \($0.fullDescription)")
+    let analyzer = PlayerAnalyzer(player: $0)
+
+    /// for each "player" i want to run `totalSimulations` # of games
+    for _ in 1...totalSimulations {
+        if let session = Game(with: [$0]) {
+            session.playGame()
+
+            analyzer.analyzeSinglePlayer(game: session)
+        }
     }
+
+    print(analyzer.results())
 }
 
 
@@ -557,7 +630,7 @@ thresholds.forEach {
 // var hand = Hand(count: 5)
 // var runs = 10000
 // var total = 0
-// for _ in 0..<10000 {
+// for _ in 1...runs {
 //     hand.roll()
 //     debugLog(hand.diceDescription())
 //     total += Score.calculateOptimal(forHand: hand).value
@@ -577,7 +650,7 @@ thresholds.forEach {
 // var hand = Hand(count: 5)
 // var runs = 10000
 // var total = 0
-// for _ in 0..<10000 {
+// for _ in 1...runs {
 //     hand.roll()
 //     debugLog(hand.diceDescription())
 //     total += Score.calculateTotal(forHand: hand).points

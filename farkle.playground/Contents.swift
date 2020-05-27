@@ -9,6 +9,22 @@ func debugLog(_ value: String = "") {
     print(value)
 }
 
+extension Double {
+    func round(to places: Int) -> Double {
+        let divisor = pow(10.0, Double(places))
+        return (self * divisor).rounded() / divisor
+    }
+}
+
+extension Array where Iterator.Element == Double {
+    func standardDeviation() -> Double {
+        let length = Double(self.count)
+        let average = self.reduce(0, {$0 + $1}) / length
+        let sumOfSquaredAverageDiff = self.map { pow($0 - average, 2.0)}.reduce(0, {$0 + $1})
+        return sqrt(sumOfSquaredAverageDiff / length)
+    }
+}
+
 enum DieFace: Int {
     case one = 1
     case two = 2
@@ -82,6 +98,13 @@ struct Hand {
     }
 }
 
+struct PlayerVariation {
+    var point: Int
+    var dice: Int
+    var greedy: Bool
+    var final: Bool
+}
+
 final class Player: Hashable {
     private let id = UUID().uuidString
 
@@ -129,17 +152,11 @@ final class Player: Hashable {
 
     var requiredToGetOnTheBoard = 0
 
-    /// Initializes a Player object with given thresholds and properties
-    ///
-    /// - parameter pointThreshold: The running-total at which a player will stop their turn to collect points for a given turn
-    /// - parameter diceThreshold: The minimum required dice to roll on a given turn once the point threshold has been breached. Any value less than 1 defaults to 1.
-    /// - parameter greedy: How a player decides to handle "post-pointThreshold, but on-the-edge-diceThreshold" scenarios (See `greedy` description). Defaults to false
-    /// - parameter playsFinalTurnDifferently: If true, acts as if the point threshold is the winner's score minus their current score
-    init(point pointThreshold: Int, dice diceThreshold: Int, greedy: Bool = false, playsFinalTurnDifferently: Bool = true) {
-        self.pointThreshold = pointThreshold
-        self.diceThreshold = diceThreshold > 0 ? diceThreshold : 1 // 0 makes no sense.
-        self.greedy = greedy
-        self.playsFinalTurnDifferently = playsFinalTurnDifferently
+    init(variation: PlayerVariation) {
+        self.pointThreshold = variation.point
+        self.diceThreshold = variation.dice > 0 ? variation.dice : 1 // 0 makes no sense.
+        self.greedy = variation.greedy
+        self.playsFinalTurnDifferently = variation.final
     }
 
     var description: String {
@@ -429,7 +446,6 @@ protocol ScoreManager: AnyObject {
 }
 
 final class Game: ScoreManager {
-
     private(set) var players: [Player]
     private(set) var scores = [Player: Int]()
 
@@ -447,7 +463,7 @@ final class Game: ScoreManager {
     private(set) var numberOfRoundsPlayed = 0
 
     init?(with players: [Player], minimumWinScore: Int = 10000, requiredToGetOnTheBoard: Int = 500) {
-        guard thresholds.count >= 1 else {
+        guard players.count >= 1 else {
             return nil
         }
 
@@ -563,8 +579,15 @@ final class PlayerAnalyzer {
 
     func results() -> String {
         let allTurns = self.games.map { "\($0.numberOfRoundsPlayed)" }.joined(separator: ", ")
-        let formattedTurns = String(format: "%.2f", self.averageNumberOfTurnsToVictory.round(to: 2))
-        return "All turns:\n" + allTurns + "\nAverage # until 10k:\n" + formattedTurns
+        return "All turns:\n" + allTurns + "\nAverage # until 10k:\n" + self.averageTurnsFormatted
+    }
+
+    var averageTurnsFormatted: String {
+        String(format: "%.2f", self.averageNumberOfTurnsToVictory.round(to: 2))
+    }
+
+    var turnsStandardDeviation: String {
+        String(format: "%.2f", self.games.map { Double($0.numberOfRoundsPlayed) }.standardDeviation())
     }
 }
 
@@ -599,20 +622,17 @@ final class MultiGameAnalyzer {
     }
 }
 
-extension Double {
-    func round(to places: Int) -> Double {
-        let divisor = pow(10.0, Double(places))
-        return (self * divisor).rounded() / divisor
-    }
-}
-
 enum Simulation {
     static func runSingleGames(forPlayers players: [Player], totalSimulatedRuns: Int, debugLoggingEnabled shouldLogThis: Bool = false) {
         let tempLogging = isLoggingEnabled
         isLoggingEnabled = shouldLogThis
 
+        print("\n==== SOLO GAMES ====\n")
+
+        let headers = "Player ID, Point Threshold, Dice Threshold, Greedy, Plays Final Different, average # till 10k, Std. Deviation"
+        print(headers)
+
         players.forEach {
-            print("\($0.description): \($0.pointThreshold), \($0.diceThreshold), \($0.greedy), \($0.playsFinalTurnDifferently)")
             let analyzer = PlayerAnalyzer(player: $0)
 
             /// for each "player" i want to run `totalSimulations` # of games
@@ -624,7 +644,7 @@ enum Simulation {
                 }
             }
 
-            print(analyzer.results() + "\n")
+            print("\($0.description): \($0.pointThreshold), \($0.diceThreshold), \($0.greedy), \($0.playsFinalTurnDifferently), \(analyzer.averageTurnsFormatted), \(analyzer.turnsStandardDeviation)")
         }
 
         isLoggingEnabled = tempLogging
@@ -634,7 +654,8 @@ enum Simulation {
         let tempLogging = isLoggingEnabled
         isLoggingEnabled = shouldLogThis
 
-        print("\nrunning mega game")
+        print("\n==== MEGA GAME ====\n")
+
         let analyzer = MultiGameAnalyzer(players: players)
 
         /// for each "player" i want to run `totalSimulations` # of games
@@ -652,23 +673,47 @@ enum Simulation {
     }
 }
 
-let thresholds = [
-    (point: 300, dice: 2, greedy: false, final: true),
-    (point: 300, dice: 3, greedy: false, final: true),
-    (point: 300, dice: 4, greedy: false, final: true),
-    (point: 300, dice: 5, greedy: false, final: true),
-    (point: 300, dice: 6, greedy: false, final: true),
+enum BooleanVariant {
+    case yes
+    case no
+}
 
-    (point: 300, dice: 2, greedy: true, final: true),
-    (point: 300, dice: 3, greedy: true, final: true),
-    (point: 300, dice: 4, greedy: true, final: true),
-    (point: 300, dice: 5, greedy: true, final: true),
-    (point: 300, dice: 6, greedy: true, final: true),
-]
+enum Utility {
+    static func generatePlayers(lowerPoint: Int, upperPoint: Int, greedyVariants: [BooleanVariant] = [.yes, .no],
+                                finalVariants: [BooleanVariant] = [.yes]) -> [Player] {
+        var variations = [PlayerVariation]()
 
-let players = thresholds.map(Player.init)
+        for pointThreshold in stride(from: lowerPoint, through: upperPoint, by: 50) {
+            for diceThreshold in 2...6 {
+                if greedyVariants.contains(.yes) {
+                    if finalVariants.contains(.yes) {
+                        variations.append(PlayerVariation(point: pointThreshold, dice: diceThreshold, greedy: true, final: true))
+                    }
 
-Simulation.runSingleGames(forPlayers: players, totalSimulatedRuns: 10)
+                    if finalVariants.contains((.no)) {
+                        variations.append(PlayerVariation(point: pointThreshold, dice: diceThreshold, greedy: true, final: false))
+                    }
+                }
+
+                if greedyVariants.contains(.no) {
+                    if finalVariants.contains(.yes) {
+                        variations.append(PlayerVariation(point: pointThreshold, dice: diceThreshold, greedy: false, final: true))
+                    }
+
+                    if finalVariants.contains((.no)) {
+                        variations.append(PlayerVariation(point: pointThreshold, dice: diceThreshold, greedy: false, final: false))
+                    }
+                }
+            }
+        }
+
+        return variations.map(Player.init)
+    }
+}
+
+let players = Utility.generatePlayers(lowerPoint: 50, upperPoint: 300)
+
+Simulation.runSingleGames(forPlayers: players, totalSimulatedRuns: 20)
 //Simulation.runMegaGames(forPlayers: players, totalSimulatedRuns: 100)
 
 
@@ -716,5 +761,3 @@ Simulation.runSingleGames(forPlayers: players, totalSimulatedRuns: 10)
 //     total += Score.calculateTotal(forHand: hand).points
 // }
 // debugLog(Double(total)/Double(runs))
-
-
